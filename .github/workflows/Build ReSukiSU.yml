@@ -265,23 +265,17 @@ jobs:
           rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
           rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
 
-          echo "🔧 正在配置内核版本信息..."
-          # Remove -dirty in kernel version
+          echo "🔧 正在清理内核版本标签..."
+          # [Modified] 仅移除 -dirty，移除了原有的后缀硬编码，避免与后续步骤冲突
           sed -i 's/ -dirty//g' kernel_platform/common/scripts/setlocalversion
           sed -i 's/ -dirty//g' kernel_platform/msm-kernel/scripts/setlocalversion
           sed -i 's/ -dirty//g' kernel_platform/external/dtc/scripts/setlocalversion
+          
           sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' kernel_platform/common/scripts/setlocalversion
           sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' kernel_platform/msm-kernel/scripts/setlocalversion
           sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' kernel_platform/external/dtc/scripts/setlocalversion
-          
-          # [Modified] 移除了原有的硬编码后缀修改，避免与自定义后缀冲突
-          
-          if [ "${{ github.event.inputs.KERNEL_VERSION }}" == "6.6" ]; then
-             sed -i 's/${scm_version}//' kernel_platform/common/scripts/setlocalversion
-             sed -i 's/${scm_version}//' kernel_platform/msm-kernel/scripts/setlocalversion
-          fi
 
-          echo "✅ 内核配置完成"
+          echo "✅ 内核基础配置完成"
 
       # ====================== 内核定制阶段 ======================
 
@@ -425,43 +419,50 @@ jobs:
             echo "✅ OGKI转换GKI_patch完成"
           fi
           
-      # [新增] 自定义内核后缀逻辑 (适配自 SukiSU Ultra)
+      # [新增/修复] 自定义内核后缀逻辑 (使用原版暴力替换法)
       - name: "📝 Custom Kernel Suffix | 自定义内核后缀"
-        if: ${{ github.event.inputs.SUFFIX != '' }}
         run: |
           cd kernel_workspace
-          SUFFIX="${{ github.event.inputs.SUFFIX }}"
-          ANDROID_VERSION="${{ github.event.inputs.ANDROID_VERSION }}"
+          
+          # 1. 确定后缀内容
+          if [ -n "${{ github.event.inputs.SUFFIX }}" ]; then
+            TARGET_SUFFIX="-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.SUFFIX }}"
+            echo "🔧 使用自定义后缀: $TARGET_SUFFIX"
+          else
+            TARGET_SUFFIX="-${{ github.event.inputs.ANDROID_VERSION }}-oki-xiaoxiaow"
+            echo "🔧 使用默认后缀: $TARGET_SUFFIX"
+          fi
 
-          for path in \
-            kernel_platform/common/scripts/setlocalversion \
-            kernel_platform/msm-kernel/scripts/setlocalversion \
-            kernel_platform/external/dtc/scripts/setlocalversion; do
+          # 2. 根据内核版本应用后缀
+          if [ "${{ github.event.inputs.KERNEL_VERSION }}" == "6.6" ]; then
+             echo "检测到 6.6 内核，修改 gki_defconfig..."
+             # 6.6 特殊处理：修改 defconfig 中的 -4k
+             ESCAPED_SUFFIX=$(printf '%s\n' "$TARGET_SUFFIX" | sed 's:[\/&]:\\&:g')
+             sudo sed -i "s/-4k/$ESCAPED_SUFFIX/g" kernel_platform/common/arch/arm64/configs/gki_defconfig
+             
+             # 清理 scm_version
+             sed -i 's/${scm_version}//' kernel_platform/common/scripts/setlocalversion
+             sed -i 's/${scm_version}//' kernel_platform/msm-kernel/scripts/setlocalversion
+             
+          else
+             echo "检测到非 6.6 内核，修改 setlocalversion..."
+             # 6.1 / 5.15 / 5.10 通用处理：暴力替换脚本最后一行
+             for path in \
+               kernel_platform/common/scripts/setlocalversion \
+               kernel_platform/msm-kernel/scripts/setlocalversion \
+               kernel_platform/external/dtc/scripts/setlocalversion; do
+               
+               if [ -f "$path" ]; then
+                  echo "正在修改: $path"
+                  # 强制替换文件中的最后一行 'echo "$res"' 为我们的后缀
+                  sed -i "\$s|echo \"\\\$res\"|echo \"$TARGET_SUFFIX\"|" "$path"
+               fi
+             done
+          fi
+          
+          echo "✅ 内核后缀修改完成"
 
-            [ -f "$path" ] || continue
-            echo "Modifying: $path"
-
-            # 确保移除 -dirty
-            sed -i 's/ -dirty//g' "$path"
-            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$path"
-
-            if grep -q 'KERNELVERSION.*scm_version' "$path"; then
-              echo "Detected NEW setlocalversion format"
-              sed -i "s|echo \"\${KERNELVERSION}.*scm_version}\"|echo \"\${KERNELVERSION}-${ANDROID_VERSION}-${SUFFIX}\"|" "$path"
-
-            elif grep -q 'echo "\$res"' "$path"; then
-              echo "Detected OLD setlocalversion format"
-              # 适配普通构建模式
-              tac "$path" | sed "0,/echo \"\\\$res\"/s//res=\\\$(echo \\\$res | cut -d- -f1-2)-${SUFFIX}; echo \"\\\$res\";/" | tac > "$path.tmp" && mv "$path.tmp" "$path"
-            else
-              echo "Unknown format, appending echo manually"
-              echo "echo \"\$res-${SUFFIX}\"" >> "$path"
-            fi
-            chmod +x "$path"
-          done
-          echo "✅ 自定义后缀已应用: $SUFFIX"
-
-      # [新增] 自定义构建时间逻辑 (适配自 SukiSU Ultra)
+      # [新增] 自定义构建时间逻辑
       - name: "🕒 Custom BUILD_TIME | 自定义构建时间"
         shell: bash
         run: |
