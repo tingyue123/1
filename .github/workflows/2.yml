@@ -279,11 +279,11 @@ jobs:
           echo "KV1=${BRANCH#*-}" | cut -d. -f1 >> $GITHUB_ENV
           echo "KV2=${BRANCH#*-}" | tr -d '.' >> $GITHUB_ENV
 
-      - name: Add KernelSU-Next (Main)
+      - name: Add KernelSU-Next (dev)
         run: |
           cd kernel_workspace/kernel_platform
-          echo "Injecting KernelSU-Next Main Branch..."
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh" | bash -s main
+          echo "Injecting KernelSU-Next dev Branch..."
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s dev
 
       - name: Add KPatch-Next (KPN)
         if: ${{ github.event.inputs.KPN == 'true' }}
@@ -317,7 +317,7 @@ jobs:
           echo "Fetching latest KPatch-Next-Module artifact from Actions..."
           
           LATEST_RUN_JSON=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-            "https://api.github.com/repos/KernelSU-Next/KPatch-Next-Module/actions/runs?status=success&branch=main&per_page=1")
+            "https://api.github.com/repos/KernelSU-Next/KPatch-Next-Module/actions/runs?status=success&branch=dev&per_page=1")
           
           RUN_ID=$(echo "$LATEST_RUN_JSON" | jq -r '.workflow_runs[0].id')
           
