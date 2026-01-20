@@ -147,7 +147,6 @@ jobs:
 
           DYNAMIC_REPO_INPUT="${{ github.event.inputs.DYNAMIC_REPO }}"
           declare -A REPOS
-          # 注意：这里之前的逻辑重复赋值了 REPOS，这里只保留最后有效的逻辑
           REPOS_URL="https://api.github.com/repos/${DYNAMIC_REPO_INPUT}/kernel_manifest"
 
           FOUND_REPO=""
@@ -156,13 +155,11 @@ jobs:
           check_repo() {
             local OWNER=$1
             local REPO_URL=$2
-            # 修复：使用 correct pipe 和逻辑或
             BRANCHES=$(curl -s "${REPO_URL}/branches" | jq -r '.[].name' || true)
             
             for BRANCH in $BRANCHES; do
               XML_URL="https://raw.githubusercontent.com/${OWNER}/kernel_manifest/$BRANCH/${FILE}.xml"
               README_URL="https://raw.githubusercontent.com/${OWNER}/kernel_manifest/$BRANCH/README.md"
-              
               if curl -sf --head "$XML_URL" > /dev/null; then
                 curl -s -o "$XML_PATH" "$XML_URL"
                 curl -s -o "$README_PATH" "$README_URL" || true
@@ -174,14 +171,11 @@ jobs:
             return 1
           }
 
-          # 1. 先尝试 OnePlusOSS
           if check_repo "OnePlusOSS" "https://api.github.com/repos/OnePlusOSS/kernel_manifest"; then
             echo "MANIFEST_REPO=OnePlusOSS" >> $GITHUB_ENV
             echo "MANIFEST_BRANCH=$FOUND_BRANCH" >> $GITHUB_ENV
           fi
 
-          # 2. 如果没找到，尝试动态仓库
-          # 修复：添加了具体的判断条件 [ -z "$FOUND_REPO" ]
           if [ -z "$FOUND_REPO" ]; then
             DYNAMIC_URL="${REPOS_URL}"
             DYNAMIC_OWNER=$(echo "$DYNAMIC_URL" | sed -E 's#https://api.github.com/repos/([^/]+)/.*#\1#')
@@ -191,13 +185,11 @@ jobs:
             fi
           fi
 
-          # 3. 如果还是没找到，报错退出
           if [ -z "$FOUND_REPO" ]; then
             echo "❌ 无法找到 ${FILE}.xml"
             exit 1
           fi
 
-          # 修复：grep 管道逻辑
           REVISION=$(grep -oP '<project[^>]+revision="\K[^"]+' "$XML_PATH" | head -n1 || true)
           CPU=$(echo "$REVISION" | sed -E 's#^(oneplus|realme|oppo)/([^_]+).*#\2#')
           ANDROID_VERSION=$(echo "$REVISION" | grep -oP '\d{1,2}\.\d{1,2}(\.\d{1,2})?')
@@ -206,7 +198,6 @@ jobs:
           echo "ANDROID_VERSION=$ANDROID_VERSION" >> $GITHUB_ENV
           echo "ANDROID_SHORT_VERSION=${ANDROID_VERSION%%.*}" >> $GITHUB_ENV
 
-          # 修复：README 解析检查
           if [ -f "$README_PATH" ]; then
             BUILD_LINE=$(grep -m1 'oplus_build_kernel.sh' "$README_PATH" || true)
             if [ -n "$BUILD_LINE" ]; then
@@ -279,12 +270,19 @@ jobs:
           echo "KV1=${BRANCH#*-}" | cut -d. -f1 >> $GITHUB_ENV
           echo "KV2=${BRANCH#*-}" | tr -d '.' >> $GITHUB_ENV
 
+      # ==========================================
+      # 核心修改：集成 KernelSU-Next (dev Branch)
+      # ==========================================
       - name: Add KernelSU-Next (dev)
         run: |
           cd kernel_workspace/kernel_platform
           echo "Injecting KernelSU-Next dev Branch..."
+          # 保持使用 dev 分支，确保稳定
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s dev
 
+      # ==========================================
+      # 核心修改：集成 KPatch-Next (KPN)
+      # ==========================================
       - name: Add KPatch-Next (KPN)
         if: ${{ github.event.inputs.KPN == 'true' }}
         run: |
@@ -300,7 +298,6 @@ jobs:
           if [ -f "$CONFIG_PATH" ]; then
             echo "Enabling KALLSYMS in $CONFIG_PATH..."
             sed -i 's/# CONFIG_KALLSYMS is not set/CONFIG_KALLSYMS=y/' "$CONFIG_PATH"
-            # 修复：grep 失败时的逻辑
             grep -q "CONFIG_KALLSYMS=y" "$CONFIG_PATH" || echo "CONFIG_KALLSYMS=y" >> "$CONFIG_PATH"
             
             sed -i 's/# CONFIG_KALLSYMS_ALL is not set/CONFIG_KALLSYMS_ALL=y/' "$CONFIG_PATH"
@@ -309,6 +306,9 @@ jobs:
             echo "Warning: gki_defconfig not found, manual config verification required."
           fi
 
+      # ==========================================
+      # 核心修改：下载 KPatch-Next Module
+      # ==========================================
       - name: Download KPatch-Next Module
         if: ${{ github.event.inputs.KPN == 'true' }}
         env:
@@ -316,12 +316,12 @@ jobs:
         run: |
           echo "Fetching latest KPatch-Next-Module artifact from Actions..."
           
+          # 修复点：强制使用 main 分支查找模块，避免 dev 分支无产物导致的报错
           LATEST_RUN_JSON=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-            "https://api.github.com/repos/KernelSU-Next/KPatch-Next-Module/actions/runs?status=success&branch=dev&per_page=1")
+            "https://api.github.com/repos/KernelSU-Next/KPatch-Next-Module/actions/runs?status=success&branch=main&per_page=1")
           
           RUN_ID=$(echo "$LATEST_RUN_JSON" | jq -r '.workflow_runs[0].id')
           
-          # 修复：完善的空值检查
           if [ -z "$RUN_ID" ] || [ "$RUN_ID" == "null" ]; then
              echo "❌ Error: Failed to find a successful run for KPatch-Next-Module."
              exit 1
@@ -334,7 +334,6 @@ jobs:
             
           DOWNLOAD_URL=$(echo "$ARTIFACTS_JSON" | jq -r '.artifacts[0].archive_download_url')
           
-          # 修复：完善的空值检查
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
              echo "❌ Error: No artifacts found in run $RUN_ID."
              exit 1
@@ -345,6 +344,9 @@ jobs:
           
           mkdir -p kpn_module_temp
 
+      # ==========================================
+      # 核心修改：Unicode 零宽字符补丁 (Raw Link)
+      # ==========================================
       - name: Apply Unicode Zero-Width Patch
         run: |
           cd kernel_workspace/kernel_platform
@@ -356,9 +358,12 @@ jobs:
           curl -L -o unicode_zero_width.patch "$PATCH_URL"
           
           echo "Applying patch..."
-          # 修复：patch 命令失败时不中断
+          # 使用 || echo 保证即使补丁失败也不中断流程
           patch -p1 --fuzz=3 < unicode_zero_width.patch || echo "⚠️ Patch failed or already applied, continuing..."
 
+      # ==========================================
+      # 保留功能：SUSFS 修补
+      # ==========================================
       - name: Apply SUSFS Patches
         if: ${{ github.event.inputs.SUSFS == 'true' }}
         run: |
@@ -366,12 +371,11 @@ jobs:
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ env.KANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
           
           cd kernel_platform/common
-          # 修复：路径中缺少空格
+          # 修复路径空格
           cp ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.KANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./
           cp ../../susfs4ksu/kernel_patches/fs/* ./fs/
           cp ../../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
           
-          # 修复：patch 失败处理
           patch -p1 < 50_add_susfs_in_gki-${{ env.KANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
           
           CONFIG_FILE=arch/arm64/configs/gki_defconfig
@@ -381,6 +385,9 @@ jobs:
           echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$CONFIG_FILE"
           echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$CONFIG_FILE"
 
+      # ==========================================
+      # 保留功能：风驰驱动 (Fengchi/SCHED)
+      # ==========================================
       - name: Apply Fengchi (SCHED)
         if: ${{ github.event.inputs.SCHED == 'true' }}
         env:
@@ -388,7 +395,6 @@ jobs:
           CPU: ${{ env.CPU }}
         run: |
           cd kernel_workspace/kernel_platform/common
-          # 修复：失败逻辑处理
           git clone https://github.com/Numbersf/SCHED_PATCH.git -b $CPU || { echo "CPU branch not found"; exit 0; }
           
           cp ./SCHED_PATCH/fengchi_${FILE}.patch ./
